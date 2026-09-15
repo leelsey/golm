@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: test
+        run: go test -race ./...
+
+      # The properties the whole design rests on, so nothing but a machine is
+      # trusted to keep them: the binary and the library pull no third-party
+      # code, and grpc stays confined to a2a/grpc.
+      - name: zero dependencies outside a2a/grpc
+        run: |
+          deps=$(go list -deps ./cmd/golm | grep -v '^github.com/leelsey/golm' | grep -E '^[a-z0-9-]+\.[a-z]+/' || true)
+          if [ -n "$deps" ]; then
+            echo "the golm binary gained third-party dependencies:"; echo "$deps"; exit 1
+          fi
+          if [ "$(go list -deps . | grep -c grpc)" != "0" ]; then
+            echo "the library now reaches grpc; it must stay inside a2a/grpc"; exit 1
+          fi
+          # Every package a library user can import, a2a/grpc excepted, must be
+          # standard library only — that is the property the design rests on, and
+          # checking only the root missed build/ and skills/.
+          for pkg in $(go list ./... | grep -v '/a2a/grpc'); do
+            third=$(go list -deps "$pkg" | grep -v '^github.com/leelsey/golm' | grep -E '^[a-z0-9-]+\.[a-z]+/' || true)
+            if [ -n "$third" ]; then
+              echo "$pkg gained third-party dependencies:"; echo "$third"; exit 1
+            fi
+          done
+          if [ "$(go list -deps . | grep -c 'internal/tui')" != "0" ]; then
+            echo "the library now reaches internal/tui, which is binary-only"; exit 1
+          fi
+          # A nested module is invisible to ./... , which is the point — but it
+          # also means an accidental import of one from the main module would go
+          # unnoticed until a user's build broke.
+          for nested in $(find . -mindepth 2 -name go.mod -not -path './.git/*'); do
+            mod=$(awk '/^module /{print $2; exit}' "$nested")
+            if go list -deps ./... 2>/dev/null | grep -qx "$mod"; then
+              echo "the main module imports the nested module $mod"; exit 1
+            fi
+          done
+
+      # Nested modules carry the dependencies the main one refuses, so they are
+      # built and tested separately rather than left to rot.
+      - name: nested modules
+        run: |
+          for nested in $(find . -mindepth 2 -name go.mod -not -path './.git/*'); do
+            dir=$(dirname "$nested")
+            echo "== $dir"
+            ( cd "$dir" \
+              && test -z "$(gofmt -l .)" \
+              && go vet ./... \
+              && go build ./... \
+              && go test -race ./... ) || exit 1
+          done
+
+  cross-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [darwin, linux, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: go build -trimpath -o /dev/null ./cmd/golm

@@ -1,0 +1,46 @@
+{
+  "default_agent": "main",
+  "providers": [
+    {
+      "name": "claude",
+      "type": "anthropic",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    },
+    {
+      "name": "gpt",
+      "type": "openai",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    {
+      "name": "gemini",
+      "type": "google",
+      "api_key_env": "GEMINI_API_KEY"
+    },
+    {
+      "name": "claude-cli",
+      "type": "cli",
+      "command": "claude",
+      "args": ["-p"],
+      "prompt_via": "stdin"
+    }
+  ],
+  "agents": [
+    {
+      "name": "main",
+      "provider": "claude",
+      "model": "claude-sonnet-4-6",
+      "role": "main",
+      "system": "You are the orchestrator. Be concise.",
+      "thinking": "budget",
+      "thinking_budget": 2048,
+      "max_tokens": 4096
+    },
+    {
+      "name": "researcher",
+      "provider": "gemini",
+      "model": "gemini-2.5-flash",
+      "role": "sub",
+      "system": "You specialise in fast factual research."
+    }
+  ]
+}
